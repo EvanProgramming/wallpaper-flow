@@ -17,4 +17,4 @@
 - [x] All core protocols (AudioSource, NowPlayingProvider, LyricsProvider, WallpaperScene) are defined
 - [x] All shared data models are defined with correct fields
 - [x] Build succeeds with all modules scaffolded
-- [ ] Git commit is signed with GPG and shows "Verified"
+- [x] Git commit is signed with SSH key and shows "Verified"
