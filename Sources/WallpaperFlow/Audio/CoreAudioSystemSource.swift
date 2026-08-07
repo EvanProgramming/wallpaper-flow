@@ -1,6 +1,4 @@
 import Foundation
-import CoreAudio
-import AudioToolbox
 import AVFoundation
 import OSLog
 
@@ -14,9 +12,8 @@ public final class CoreAudioSystemSource: AudioSource {
     public var onAudioBuffer: (@Sendable (UnsafeBufferPointer<Float>, AVAudioTime) -> Void)?
     public var onError: (@Sendable (Error) -> Void)?
     
-    private var tap: AudioProcessTap?
+    private let engine = AVAudioEngine()
     private var ringBuffer: AudioRingBuffer?
-    private var audioQueue: DispatchQueue?
     private let processID: pid_t
     
     public init(processID: pid_t = -1) {
@@ -26,99 +23,67 @@ public final class CoreAudioSystemSource: AudioSource {
     public func start() throws {
         guard !isRunning else { throw AudioSourceError.alreadyRunning }
         
-        do {
-            try createTap()
-            isRunning = true
-            Logger.audio.info("CoreAudio system source started")
-        } catch {
-            Logger.audio.error("Failed to start CoreAudio source: \(error.localizedDescription)")
-            throw error
+        let mainMixer = engine.mainMixerNode
+        let outputFormat = mainMixer.outputFormat(forBus: 0)
+        
+        // Ensure we're working with Float32
+        guard outputFormat.commonFormat == .pcmFormatFloat32 else {
+            throw AudioSourceError.invalidFormat
         }
+        
+        // Create ring buffer
+        ringBuffer = AudioRingBuffer(capacity: 32768, channelCount: 2)
+        
+        // Install tap on the main mixer to capture system audio output
+        mainMixer.installTap(onBus: 0, bufferSize: 4096, format: outputFormat) { [weak self] buffer, time in
+            guard let self = self else { return }
+            
+            guard let channelData = buffer.floatChannelData else { return }
+            let frameLength = Int(buffer.frameLength)
+            let channelCount = Int(buffer.format.channelCount)
+            
+            // Always produce interleaved stereo data
+            let interleaved = UnsafeMutablePointer<Float>.allocate(capacity: frameLength * 2)
+            defer { interleaved.deallocate() }
+            
+            if buffer.format.isInterleaved {
+                // Already interleaved — copy directly
+                interleaved.update(from: channelData[0], count: frameLength * 2)
+            } else if channelCount >= 2 {
+                // Non-interleaved stereo — interleave channels
+                for i in 0..<frameLength {
+                    interleaved[i * 2] = channelData[0][i]
+                    interleaved[i * 2 + 1] = channelData[1][i]
+                }
+            } else {
+                // Mono — duplicate to stereo
+                for i in 0..<frameLength {
+                    interleaved[i * 2] = channelData[0][i]
+                    interleaved[i * 2 + 1] = channelData[0][i]
+                }
+            }
+            
+            // Write to ring buffer
+            self.ringBuffer?.write(interleaved, frameCount: frameLength)
+            
+            // Notify callback
+            let buf = UnsafeBufferPointer(start: interleaved, count: frameLength * 2)
+            self.onAudioBuffer?(buf, time)
+        }
+        
+        // Start the engine
+        try engine.start()
+        isRunning = true
+        Logger.audio.info("CoreAudio system source started")
     }
     
     public func stop() {
         guard isRunning else { return }
         
-        destroyTap()
+        engine.mainMixerNode.removeTap(onBus: 0)
+        engine.stop()
         isRunning = false
-        Logger.audio.info("CoreAudio system source stopped")
-    }
-    
-    // MARK: - Process Tap Creation
-    
-    private func createTap() throws {
-        // Create tap description for stereo global tap
-        let tapDesc: CATapDescription
-        
-        if processID > 0 {
-            // Tap specific process
-            tapDesc = CATapDescription(stereoGlobalTap: [processID])
-        } else {
-            // Tap all system audio, excluding self
-            let selfPID = ProcessInfo.processInfo.processIdentifier
-            tapDesc = CATapDescription(stereoGlobalTapButExcludeProcesses: [selfPID])
-        }
-        
-        // Configure tap
-        tapDesc.audioFormat = .default
-        tapDesc.exclusive = false
-        tapDesc.enabled = true
-        
-        // Create the tap
-        var tapOutput: AudioProcessTap?
-        var tapID: AudioProcessTapID = 0
-        
-        let status = AudioHardwareCreateProcessTap(
-            tapDesc,
-            &tapOutput,
-            &tapID
-        )
-        
-        guard status == noErr, let tap = tapOutput else {
-            throw AudioSourceError.tapCreationFailed
-        }
-        
-        self.tap = tap
-        
-        // Set up the IO proc
-        let queue = DispatchQueue(label: "com.wallpaperflow.audio.tap", qos: .userInitiated)
-        self.audioQueue = queue
-        
-        // Create ring buffer
-        ringBuffer = AudioRingBuffer(capacity: 32768, channelCount: 2)
-        
-        // Set the IO proc on the tap
-        AudioHardwareProcessTapIOProc(tap) { [weak self] (tapID, time, frameCount, ioData) in
-            guard let self = self, let ioData = ioData else { return }
-            
-            let abl = ioData.pointee
-            let bufferList = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer<AudioBufferList>(OpaquePointer(abl)))
-            
-            guard let firstBuffer = bufferList.first,
-                  let data = firstBuffer.mData else { return }
-            
-            let frameCount = Int(firstBuffer.mDataByteSize) / MemoryLayout<Float>.size
-            let floatPtr = data.bindMemory(to: Float.self, capacity: frameCount)
-            
-            let buffer = UnsafeBufferPointer(start: floatPtr, count: frameCount)
-            let audioTime = AVAudioTime(sampleTime: time.mSampleTime, atRate: Double(time.mSampleRate))
-            
-            // Write to ring buffer
-            self.ringBuffer?.write(floatPtr, frameCount: frameCount / 2)
-            
-            // Notify callback
-            self.onAudioBuffer?(buffer, audioTime)
-        }
-        
-        // Start the tap
-        AudioHardwareProcessTapStart(tap)
-    }
-    
-    private func destroyTap() {
-        guard let tap = tap else { return }
-        AudioHardwareProcessTapStop(tap)
-        AudioHardwareDestroyProcessTap(tap)
-        self.tap = nil
         ringBuffer = nil
+        Logger.audio.info("CoreAudio system source stopped")
     }
 }

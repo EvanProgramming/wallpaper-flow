@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import AVFoundation
 import OSLog
 
 // MARK: - App Delegate
@@ -11,6 +12,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarController: MenuBarController?
     private var wallpaperCoordinator: WallpaperCoordinator?
     private var settingsStore: SettingsStore?
+    private var musicManager: MusicManager?
+    private var audioSession: AudioSession?
     private var cancellables = Set<AnyCancellable>()
     
     public override init() {
@@ -24,9 +27,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsStore = SettingsStore(appState: appState)
         menuBarController = MenuBarController(appState: appState)
         wallpaperCoordinator = WallpaperCoordinator()
+        audioSession = AudioSession()
+        musicManager = MusicManager(appState: appState)
+        
+        // Connect music manager to audio session for Shazam buffer feeding
+        if let audioSession = audioSession {
+            musicManager?.connect(audioSession: audioSession)
+        }
         
         // Restore settings
         settingsStore?.restore()
+        
+        // Start music providers
+        musicManager?.start()
         
         // Subscribe to events
         setupEventSubscription()
@@ -42,6 +55,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public func applicationWillTerminate(_ notification: Notification) {
         Logger.app.info("Wallpaper Flow terminating...")
         
+        // Stop music providers
+        musicManager?.stop()
+        
+        // Stop audio
+        audioSession?.stopCurrentSource()
+        
         // Save settings
         settingsStore?.save()
         
@@ -56,6 +75,24 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     
     public func applicationDidChangeScreenParameters(_ notification: Notification) {
         Logger.app.info("Screen parameters changed")
+    }
+    
+    // MARK: - Audio Source Management
+    
+    public func startAudioSource(_ type: AudioSourceType) {
+        audioSession?.startSource(type)
+        
+        // Wire Shazam buffer feeding to audio session
+        // The audio session's source sends PCM buffers to the ring buffer
+        // We need to tap into the audio source for Shazam
+        if type == .systemAudio || type == .selectedApp {
+            // Shazam provider will receive audio buffers from the Core Audio tap
+            // This is handled by the audio source's onAudioBuffer callback
+        }
+    }
+    
+    public func stopAudioSource() {
+        audioSession?.stopCurrentSource()
     }
     
     // MARK: - Event Subscription

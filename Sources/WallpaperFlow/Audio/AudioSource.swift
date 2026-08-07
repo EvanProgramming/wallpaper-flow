@@ -20,7 +20,7 @@ public struct AudioFormat: Sendable {
 
 // MARK: - Audio Source Protocol
 
-public protocol AudioSource: AnyObject, Sendable {
+public protocol AudioSource: AnyObject {
     var isRunning: Bool { get }
     var format: AudioFormat { get }
     

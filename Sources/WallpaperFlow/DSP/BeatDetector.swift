@@ -114,7 +114,7 @@ public final class BeatDetector: @unchecked Sendable {
         let median = sorted[sorted.count / 2]
         
         // Compute mean of top half for more sensitivity
-        let topHalf = sorted[sorted.count / 2...]
+        let topHalf = sorted.suffix(from: sorted.count / 2)
         let mean = topHalf.reduce(0, +) / Float(max(1, topHalf.count))
         
         // Use median + offset for threshold

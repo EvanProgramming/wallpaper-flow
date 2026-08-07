@@ -42,7 +42,7 @@ public final class AudioAnalyzer: @unchecked Sendable {
     public init() {
         // Create FFT setup
         let log2n = vDSP_Length(log2(Float(fftSize)))
-        guard let setup = vDSP_DFT_CreateSetup(
+        guard let setup = vDSP_DFT_zop_CreateSetup(
             nil,
             log2n,
             vDSP_DFT_Direction.FORWARD
@@ -60,10 +60,21 @@ public final class AudioAnalyzer: @unchecked Sendable {
         self.magnitudes = [Float](repeating: 0, count: fftSize / 2)
         self.phaseBuffer = [Float](repeating: 0, count: fftSize / 2)
         
-        // Pre-compute logarithmic frequency band mapping
+        // Pre-compute logarithmic frequency band mapping (inline, no self needed)
+        let minFreq: Float = 20.0
+        let maxFreq: Float = 20000.0
+        let bins = fftSize / 2
+        let binFreq = sampleRate / Float(fftSize)
         var mappings: [(start: Int, end: Int)] = []
         var frequencies: [Float] = []
-        computeLogBands(mappings: &mappings, frequencies: &frequencies)
+        for i in 0..<logBands {
+            let freq = minFreq * pow(maxFreq / minFreq, Float(i) / Float(logBands - 1))
+            let nextFreq = i < logBands - 1 ? minFreq * pow(maxFreq / minFreq, Float(i + 1) / Float(logBands - 1)) : maxFreq
+            let startBin = max(0, Int(freq / binFreq))
+            let endBin = min(bins - 1, Int(nextFreq / binFreq))
+            mappings.append((startBin, endBin))
+            frequencies.append(freq)
+        }
         self.bandMappings = mappings
         self.bandFrequencies = frequencies
         
@@ -109,8 +120,9 @@ public final class AudioAnalyzer: @unchecked Sendable {
         
         // Take the latest fftSize samples (left channel for now)
         let startIdx = accumulatedFrames.count - fftSize * 2
-        var leftChannel = Array(accumulatedFrames[startIdx..<startIdx + fftSize * 2].striding(by: 2))
-        var rightChannel = Array(accumulatedFrames[startIdx + 1..<startIdx + fftSize * 2].striding(by: 2))
+        let interleavedRange = accumulatedFrames[startIdx..<startIdx + fftSize * 2]
+        var leftChannel = Array(interleavedRange.striding(by: 2))
+        var rightChannel = Array(interleavedRange.dropFirst().striding(by: 2))
         
         // Ensure we have exactly fftSize samples
         if leftChannel.count < fftSize {
@@ -138,9 +150,9 @@ public final class AudioAnalyzer: @unchecked Sendable {
         var waveformR = [Float](repeating: 0, count: waveformLength)
         
         let wfStartIdx = max(0, accumulatedFrames.count - waveformLength * 2 * waveformStride)
-        let wfSource = Array(accumulatedFrames[wfStartIdx..<accumulatedFrames.count])
-        let leftWF = Array(wfSource.striding(by: 2))
-        let rightWF = Array(wfSource.dropFirst().striding(by: 2))
+        let wfSource: [Float] = Array(accumulatedFrames[wfStartIdx..<accumulatedFrames.count])
+        let leftWF: [Float] = Array(wfSource.striding(by: 2))
+        let rightWF: [Float] = Array(wfSource.dropFirst().striding(by: 2))
         
         for i in 0..<min(waveformLength, leftWF.count) {
             waveformL[i] = leftWF[i]
@@ -148,8 +160,12 @@ public final class AudioAnalyzer: @unchecked Sendable {
         }
         
         // Compute RMS
-        let rmsL = sqrt(vDSP.meanSquare(leftMagnitudes))
-        let rmsR = sqrt(vDSP.meanSquare(rightMagnitudes))
+        var meanSquareL: Float = 0
+        vDSP_measqv(leftMagnitudes, 1, &meanSquareL, vDSP_Length(leftMagnitudes.count))
+        var meanSquareR: Float = 0
+        vDSP_measqv(rightMagnitudes, 1, &meanSquareR, vDSP_Length(rightMagnitudes.count))
+        let rmsL = sqrt(meanSquareL)
+        let rmsR = sqrt(meanSquareR)
         let rms = (rmsL + rmsR) * 0.5
         let peak = max(leftMagnitudes.max() ?? 0, rightMagnitudes.max() ?? 0)
         
@@ -219,10 +235,9 @@ public final class AudioAnalyzer: @unchecked Sendable {
         var imag = [Float](repeating: 0, count: fftSize)
         
         // Forward DFT
-        real.withUnsafeMutablePointer { realPtr in
-            imag.withUnsafeMutablePointer { imagPtr in
-                // Use split complex format
-                var splitComplex = DSPSplitComplex(realp: realPtr, imagp: imagPtr)
+        real.withUnsafeMutableBufferPointer { realBuffer in
+            imag.withUnsafeMutableBufferPointer { imagBuffer in
+                guard let realPtr = realBuffer.baseAddress, let imagPtr = imagBuffer.baseAddress else { return }
                 vDSP_DFT_Execute(fftSetup, realPtr, imagPtr, realPtr, imagPtr)
             }
         }
@@ -316,11 +331,20 @@ public final class AudioAnalyzer: @unchecked Sendable {
 
 extension Array {
     func striding(by n: Int) -> UnfoldSequence<Element, Int> {
-        var index = 0
-        return sequence(state: &index) { index in
-            guard index < self.count else { return nil }
-            defer { index += n }
-            return self[index]
+        return sequence(state: 0) { state in
+            guard state < self.count else { return nil }
+            defer { state += n }
+            return self[state]
+        }
+    }
+}
+
+extension ArraySlice {
+    func striding(by n: Int) -> UnfoldSequence<Element, Int> {
+        return sequence(state: 0) { state in
+            guard state < self.count else { return nil }
+            defer { state += n }
+            return self[self.startIndex + state]
         }
     }
 }
