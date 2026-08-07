@@ -1,0 +1,28 @@
+# Xcode
+.DS_Store
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+DerivedData/
+
+# Swift Package Manager
+.build/
+Packages/
+*.build/
+
+# macOS
+*.swp
+*.swo
+*~
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Secrets
+*.env
+.env.*
+
+# PRD documents (not part of the app)
+Wallpaper Flow — macOS Audio-Reactive Wallpaper.md
