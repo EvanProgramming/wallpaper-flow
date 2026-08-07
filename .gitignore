@@ -26,3 +26,6 @@ Packages/
 
 # PRD documents (not part of the app)
 Wallpaper Flow — macOS Audio-Reactive Wallpaper.md
+
+# Trae IDE project configuration (not part of the app)
+.trae/
