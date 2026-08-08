@@ -7,7 +7,7 @@ import OSLog
 
 @MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate {
-    
+
     private let appState = AppState()
     private var menuBarController: MenuBarController?
     private var wallpaperCoordinator: WallpaperCoordinator?
@@ -15,88 +15,93 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var musicManager: MusicManager?
     private var audioSession: AudioSession?
     private var cancellables = Set<AnyCancellable>()
-    
+
     public override init() {
         super.init()
     }
-    
+
     public func applicationDidFinishLaunching(_ notification: Notification) {
         Logger.app.info("Wallpaper Flow starting...")
-        
+
         // Initialize components
         settingsStore = SettingsStore(appState: appState)
         menuBarController = MenuBarController(appState: appState)
         wallpaperCoordinator = WallpaperCoordinator()
         audioSession = AudioSession()
         musicManager = MusicManager(appState: appState)
-        
+
+        // Connect audio session to wallpaper coordinator
+        wallpaperCoordinator?.audioSession = audioSession
+
+        // Create and register the Aurora Flow scene
+        let auroraScene = AuroraFlowScene()
+        wallpaperCoordinator?.setScene(auroraScene)
+
         // Connect music manager to audio session for Shazam buffer feeding
         if let audioSession = audioSession {
             musicManager?.connect(audioSession: audioSession)
         }
-        
+
         // Restore settings
         settingsStore?.restore()
-        
+
         // Start music providers
         musicManager?.start()
-        
+
         // Subscribe to events
         setupEventSubscription()
-        
-        // Auto-apply wallpaper if it was active
+
+        // Auto-apply wallpaper and start audio
         if appState.visualState.isRendering {
             wallpaperCoordinator?.applyWallpaper()
+            audioSession?.startSource(.systemAudio)
+        } else {
+            // Auto-start for first launch
+            appState.visualState.isRendering = true
+            wallpaperCoordinator?.applyWallpaper()
+            audioSession?.startSource(.systemAudio)
         }
-        
+
         Logger.app.info("Wallpaper Flow started successfully")
     }
-    
+
     public func applicationWillTerminate(_ notification: Notification) {
         Logger.app.info("Wallpaper Flow terminating...")
-        
+
         // Stop music providers
         musicManager?.stop()
-        
+
         // Stop audio
         audioSession?.stopCurrentSource()
-        
+
         // Save settings
         settingsStore?.save()
-        
+
         // Remove wallpaper
         wallpaperCoordinator?.removeWallpaper()
-        
+
         // Publish termination event
         AppEventBus.shared.publish(.appWillTerminate)
-        
+
         cancellables.removeAll()
     }
-    
+
     public func applicationDidChangeScreenParameters(_ notification: Notification) {
         Logger.app.info("Screen parameters changed")
     }
-    
+
     // MARK: - Audio Source Management
-    
+
     public func startAudioSource(_ type: AudioSourceType) {
         audioSession?.startSource(type)
-        
-        // Wire Shazam buffer feeding to audio session
-        // The audio session's source sends PCM buffers to the ring buffer
-        // We need to tap into the audio source for Shazam
-        if type == .systemAudio || type == .selectedApp {
-            // Shazam provider will receive audio buffers from the Core Audio tap
-            // This is handled by the audio source's onAudioBuffer callback
-        }
     }
-    
+
     public func stopAudioSource() {
         audioSession?.stopCurrentSource()
     }
-    
+
     // MARK: - Event Subscription
-    
+
     private func setupEventSubscription() {
         AppEventBus.shared.publisher()
             .receive(on: DispatchQueue.main)
@@ -105,7 +110,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
     }
-    
+
     private func handleEvent(_ event: AppEvent) {
         switch event {
         case .displayAdded, .displayRemoved:

@@ -54,7 +54,7 @@ public final class AppleMusicProvider: @unchecked Sendable, NowPlayingProvider {
 
     private func updateCurrentTrack() {
         Task { @MainActor in
-            let player = SystemMusicPlayer.shared
+            let player = ApplicationMusicPlayer.shared
 
             guard let currentEntry = player.queue.currentEntry else {
                 // No track playing
@@ -86,8 +86,18 @@ public final class AppleMusicProvider: @unchecked Sendable, NowPlayingProvider {
                 playbackState = .unknown
             }
 
-            // Build a stable track ID
-            let isrc = currentEntry.item?.isrc
+            // Build a stable track ID — extract ISRC from the Item enum
+            let isrc: String? = {
+                guard let item = currentEntry.item else { return nil }
+                switch item {
+                case .song(let song):
+                    return song.isrc
+                case .musicVideo(let video):
+                    return video.isrc
+                default:
+                    return nil
+                }
+            }()
             let trackID: String
             if let isrc = isrc, !isrc.isEmpty {
                 trackID = isrc

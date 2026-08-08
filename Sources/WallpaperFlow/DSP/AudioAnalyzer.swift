@@ -13,11 +13,13 @@ public final class AudioAnalyzer: @unchecked Sendable {
     private let waveformLength: Int = 512
     
     // FFT Resources
-    private let fftSetup: vDSP_DFT_Setup
+    private let fftSetup: FFTSetup
     private var window: [Float]
     private var fftBuffer: [Float]
     private var magnitudes: [Float]
     private var phaseBuffer: [Float]
+    private var splitReal: [Float]
+    private var splitImag: [Float]
     
     // Frequency mapping
     private let bandFrequencies: [Float]
@@ -40,14 +42,10 @@ public final class AudioAnalyzer: @unchecked Sendable {
     private let sampleRate: Float = 48000.0
     
     public init() {
-        // Create FFT setup
+        // Create FFT setup using vDSP_create_fftsetup (widely available)
         let log2n = vDSP_Length(log2(Float(fftSize)))
-        guard let setup = vDSP_DFT_zop_CreateSetup(
-            nil,
-            log2n,
-            vDSP_DFT_Direction.FORWARD
-        ) else {
-            fatalError("Failed to create vDSP_DFT setup")
+        guard let setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else {
+            fatalError("Failed to create vDSP FFT setup")
         }
         self.fftSetup = setup
         
@@ -59,6 +57,8 @@ public final class AudioAnalyzer: @unchecked Sendable {
         self.fftBuffer = [Float](repeating: 0, count: fftSize)
         self.magnitudes = [Float](repeating: 0, count: fftSize / 2)
         self.phaseBuffer = [Float](repeating: 0, count: fftSize / 2)
+        self.splitReal = [Float](repeating: 0, count: fftSize / 2)
+        self.splitImag = [Float](repeating: 0, count: fftSize / 2)
         
         // Pre-compute logarithmic frequency band mapping (inline, no self needed)
         let minFreq: Float = 20.0
@@ -85,7 +85,7 @@ public final class AudioAnalyzer: @unchecked Sendable {
     }
     
     deinit {
-        vDSP_DFT_DestroySetup(fftSetup)
+        vDSP_destroy_fftsetup(fftSetup)
     }
     
     // MARK: - Configuration
@@ -231,30 +231,43 @@ public final class AudioAnalyzer: @unchecked Sendable {
     // MARK: - FFT Processing
     
     private func computeMagnitudes(from buffer: [Float]) -> [Float] {
-        var real = buffer
-        var imag = [Float](repeating: 0, count: fftSize)
+        // For vDSP_fft_zrip with a real input of length N:
+        // Pack as: real[i] = buffer[2*i], imag[i] = buffer[2*i+1] for i in 0..<N/2
+        let halfSize = fftSize / 2
+        for i in 0..<halfSize {
+            splitReal[i] = buffer[i * 2]
+            splitImag[i] = buffer[i * 2 + 1]
+        }
         
-        // Forward DFT
-        real.withUnsafeMutableBufferPointer { realBuffer in
-            imag.withUnsafeMutableBufferPointer { imagBuffer in
-                guard let realPtr = realBuffer.baseAddress, let imagPtr = imagBuffer.baseAddress else { return }
-                vDSP_DFT_Execute(fftSetup, realPtr, imagPtr, realPtr, imagPtr)
+        let log2n = vDSP_Length(log2(Float(fftSize)))
+        
+        // Perform forward FFT using split complex
+        splitReal.withUnsafeMutableBufferPointer { realBuf in
+            splitImag.withUnsafeMutableBufferPointer { imagBuf in
+                var split = DSPSplitComplex(realp: realBuf.baseAddress!, imagp: imagBuf.baseAddress!)
+                vDSP_fft_zrip(fftSetup, &split, 1, log2n, FFTDirection(kFFTDirection_Forward))
             }
         }
         
-        // Compute magnitudes
-        var magnitudes = [Float](repeating: 0, count: fftSize / 2)
-        vDSP_vdist(
-            real, 1, imag, 1,
-            &magnitudes, 1,
-            vDSP_Length(fftSize / 2)
-        )
+        // Compute squared magnitudes (|real|^2 + |imag|^2)
+        var magnitudes = [Float](repeating: 0, count: halfSize)
+        splitReal.withUnsafeMutableBufferPointer { realBuf in
+            splitImag.withUnsafeMutableBufferPointer { imagBuf in
+                var split = DSPSplitComplex(realp: realBuf.baseAddress!, imagp: imagBuf.baseAddress!)
+                vDSP_zvmags(&split, 1, &magnitudes, 1, vDSP_Length(halfSize))
+            }
+        }
+        
+        // Take square root to get magnitude (Float version)
+        var sqrtMag = magnitudes
+        var count = Int32(halfSize)
+        vvsqrtf(&sqrtMag, magnitudes, &count)
         
         // Normalize by FFT size
         var scale = 2.0 / Float(fftSize)
-        vDSP_vsmul(magnitudes, 1, &scale, &magnitudes, 1, vDSP_Length(fftSize / 2))
+        vDSP_vsmul(sqrtMag, 1, &scale, &sqrtMag, 1, vDSP_Length(halfSize))
         
-        return magnitudes
+        return sqrtMag
     }
     
     // MARK: - Log Band Mapping
