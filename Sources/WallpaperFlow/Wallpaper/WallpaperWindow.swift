@@ -24,8 +24,11 @@ public final class WallpaperWindow: NSWindow {
     }
     
     private func configureWindow(screen: NSScreen) {
-        // Window level: behind desktop icons
-        level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)))
+        // Window level: above Finder's desktop window to ensure visibility
+        // Finder's desktop window sits at kCGDesktopWindowLevel + 21,
+        // so we use a level safely above it.
+        let desktopLevel = Int(CGWindowLevelForKey(.desktopWindow))
+        level = NSWindow.Level(rawValue: desktopLevel + 100)
         
         // Visual properties
         isOpaque = true
@@ -47,7 +50,7 @@ public final class WallpaperWindow: NSWindow {
         // Make it a desktop window
         canHide = false
         isExcludedFromWindowsMenu = true
-        sharingType = .readOnly
+        sharingType = .none
         
         // Ensure it's positioned correctly
         setFrame(screen.frame, display: true)
